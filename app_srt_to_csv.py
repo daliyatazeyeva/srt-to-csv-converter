@@ -2,7 +2,7 @@ import streamlit as st
 import pysrt
 import csv
 import io
-import pandas as pd # New tool to show tables correctly
+import pandas as pd
 
 def format_timestamp(srt_time):
     total_seconds = (srt_time.hours * 3600 + 
@@ -11,12 +11,24 @@ def format_timestamp(srt_time):
                      srt_time.milliseconds / 1000.0)
     return f"{total_seconds:.3f}"
 
-def find_matching_translation(orig_start, trans_subs):
-    for sub in trans_subs:
-        diff = abs(sub.start.ordinal - orig_start.ordinal)
-        if diff <= 150: # 150ms tolerance
-            return sub
-    return None
+def get_combined_english(trans_sub, orig_subs):
+    """Finds all English blocks that overlap with a Russian block's time."""
+    overlapping_text = []
+    # Convert Russian start/end to milliseconds for comparison
+    t_start = trans_sub.start.ordinal
+    t_end = trans_sub.end.ordinal
+    
+    for sub_o in orig_subs:
+        o_start = sub_o.start.ordinal
+        o_end = sub_o.end.ordinal
+        
+        # Check if the English block overlaps with the Russian block time
+        # Logic: (StartA <= EndB) and (EndA >= StartB)
+        if (o_start <= t_end + 100) and (o_end >= t_start - 100):
+            clean_text = sub_o.text_without_tags.replace('\n', ' ').strip()
+            overlapping_text.append(clean_text)
+            
+    return " ".join(overlapping_text)
 
 def process_srts(original_file, translated_file):
     orig_content = original_file.read().decode("utf-8-sig")
@@ -28,23 +40,22 @@ def process_srts(original_file, translated_file):
     csv_data = []
     csv_headers = ['speaker', 'transcription', 'translation', 'start_time', 'end_time']
     
-    for sub_o in subs_orig:
-        sub_t = find_matching_translation(sub_o.start, subs_trans)
-        
-        # Clean text and remove line breaks
-        transcription = sub_o.text_without_tags.replace('\n', ' ').strip()
-        translation = sub_t.text_without_tags.replace('\n', ' ').strip() if sub_t else ""
+    # We iterate through the TRANSLATION as the master list
+    # because that represents the final "segments" as seen in SmartCat
+    for sub_t in subs_trans:
+        # Combine all English snippets that belong to this Russian segment
+        transcription = get_combined_english(sub_t, subs_orig)
+        translation = sub_t.text_without_tags.replace('\n', ' ').strip()
         
         csv_data.append({
             'speaker': 'Speaker 1',
             'transcription': transcription,
             'translation': translation,
-            'start_time': format_timestamp(sub_o.start),
-            'end_time': format_timestamp(sub_o.end)
+            'start_time': format_timestamp(sub_t.start),
+            'end_time': format_timestamp(sub_t.end)
         })
         
     output = io.StringIO()
-    # QUOTE_ALL ensures that even if there are commas in the text, the CSV stays organized
     writer = csv.DictWriter(output, fieldnames=csv_headers, quoting=csv.QUOTE_ALL)
     writer.writeheader()
     writer.writerows(csv_data)
@@ -54,8 +65,8 @@ def process_srts(original_file, translated_file):
 # --- Streamlit UI ---
 st.set_page_config(page_title="SRT Smart Merger", layout="wide")
 
-st.title("🎬 Smart SRT Merger")
-st.info("Fixed: Commas in text will no longer break columns.")
+st.title("🎬 Smart SRT Merger (SmartCat Optimized)")
+st.info("This version merges English segments to match the Russian segment structure.")
 
 col1, col2 = st.columns(2)
 
@@ -69,20 +80,17 @@ if orig_file and trans_file:
     if st.button("Merge and Generate CSV"):
         try:
             csv_result, count_o, count_t = process_srts(orig_file, trans_file)
-            
-            # Use Pandas to read the CSV result correctly for the preview
             df = pd.read_csv(io.StringIO(csv_result))
             
-            st.success(f"Processed {count_o} lines.")
+            st.success(f"Merged {count_o} English lines into {count_t} Russian segments.")
             
             st.write("### Preview")
-            # This will now look perfect and aligned
-            st.dataframe(df.head(10), use_container_width=True)
+            st.dataframe(df.head(15), use_container_width=True)
 
             st.download_button(
-                label="📥 Download Merged CSV",
+                label="📥 Download Corrected CSV",
                 data=csv_result.encode('utf-8'),
-                file_name="aligned_subtitles.csv",
+                file_name="smartcat_aligned.csv",
                 mime="text/csv"
             )
             
