@@ -13,56 +13,70 @@ def format_timestamp(srt_time):
     return f"{total_seconds:.3f}"
 
 def process_srts(original_file, translated_file):
-    # Read and parse with universal encoding support
+    # Read and parse
     orig_content = original_file.read().decode("utf-8-sig", errors='replace')
     trans_content = translated_file.read().decode("utf-8-sig", errors='replace')
-    
     subs_orig = pysrt.from_string(orig_content)
     subs_trans = pysrt.from_string(trans_content)
     
     if not subs_orig or not subs_trans:
-        raise ValueError("One of the SRT files appears to be empty or invalid.")
+        raise ValueError("One of the SRT files is empty or invalid.")
 
-    # matched_mapping stores the English SubRipItems for each Translation segment index
-    # This automatically adjusts to the number of rows in the Translation file
+    # matched_mapping stores the English SubRipItems for each Russian segment index
     matched_mapping = {i: [] for i in range(len(subs_trans))}
     
-    # 1. CREATE BOUNDARIES between Translation segments
-    # This logic adapts to any number of segments
-    boundaries = []
-    for i in range(len(subs_trans) - 1):
-        # Boundary is halfway between end of block A and start of block B
-        midpoint = (subs_trans[i].end.ordinal + subs_trans[i+1].start.ordinal) / 2
-        boundaries.append(midpoint)
-    
-    # 2. ASSIGN Original subtitles to Buckets
+    # NEW LOGIC: Maximum Overlap Assignment
     for sub_o in subs_orig:
-        o_center = sub_o.start.ordinal + (sub_o.duration.ordinal / 2)
+        o_start = sub_o.start.ordinal
+        o_end = sub_o.end.ordinal
+        o_center = o_start + (sub_o.duration.ordinal / 2)
         
-        target_idx = 0
-        for i, boundary in enumerate(boundaries):
-            if o_center > boundary:
-                target_idx = i + 1
-            else:
-                break
-        matched_mapping[target_idx].append(sub_o)
+        best_match_idx = 0
+        max_overlap = -1
+        
+        # 1. Try to find the segment with the most timing overlap
+        for i, sub_t in enumerate(subs_trans):
+            t_start = sub_t.start.ordinal
+            t_end = sub_t.end.ordinal
+            
+            # Calculate intersection/overlap in milliseconds
+            overlap = min(o_end, t_end) - max(o_start, t_start)
+            
+            if overlap > max_overlap:
+                max_overlap = overlap
+                best_match_idx = i
+        
+        # 2. If no physical overlap (it's in a silence gap), 
+        # assign to the segment whose center is mathematically closest
+        if max_overlap <= 0:
+            min_dist = float('inf')
+            for i, sub_t in enumerate(subs_trans):
+                t_center = sub_t.start.ordinal + (sub_t.duration.ordinal / 2)
+                dist = abs(o_center - t_center)
+                if dist < min_dist:
+                    min_dist = dist
+                    best_match_idx = i
+        
+        clean_o = sub_o.text_without_tags.replace('\n', ' ').strip()
+        if clean_o:
+            matched_mapping[best_match_idx].append(sub_o)
 
     csv_data = []
     csv_headers = ['speaker', 'transcription', 'translation', 'start_time', 'end_time']
     
-    # 3. CONSTRUCT the merged blocks using Original Speech Timings
+    # Construct final rows based on the Russian "Sense" segments
     for i, sub_t in enumerate(subs_trans):
-        assigned_orig = matched_mapping[i]
+        assigned_english = matched_mapping[i]
         
-        # If original speech was found for this segment
-        if assigned_orig:
-            transcription = " ".join([s.text_without_tags.replace('\n', ' ').strip() for s in assigned_orig])
-            # Use the true start of the first speech snippet and end of the last speech snippet
-            start_val = format_timestamp(assigned_orig[0].start)
-            end_val = format_timestamp(assigned_orig[-1].end)
+        if assigned_english:
+            # Combine all English snippets for this segment
+            transcription = " ".join([s.text_without_tags.replace('\n', ' ').strip() for s in assigned_english])
+            # Use the absolute beginning and end of the English speech in this bucket
+            start_val = format_timestamp(assigned_english[0].start)
+            end_val = format_timestamp(assigned_english[-1].end)
         else:
-            # Fallback to translation timing if no speech was found in this window
-            transcription = "[No matching speech]"
+            # Fallback if no English was found for this Russian block
+            transcription = ""
             start_val = format_timestamp(sub_t.start)
             end_val = format_timestamp(sub_t.end)
 
@@ -84,43 +98,36 @@ def process_srts(original_file, translated_file):
     return output.getvalue(), len(subs_orig), len(subs_trans)
 
 # --- Streamlit UI ---
-st.set_page_config(page_title="Universal AI Dubbing Aligner", layout="wide")
+st.set_page_config(page_title="AI Dubbing Aligner Pro", layout="wide")
 
-st.title("🎙️ Universal SRT Aligner for AI Dubbing")
-st.markdown("""
-**How this works for any video:**
-1. Upload your original speech SRT and your translated SRT.
-2. The tool creates 'buckets' based on your **Translation segments**.
-3. It captures the **exact start and end** of the original speech for each bucket.
-4. It outputs a CSV ready for AI Dubbing tools.
-""")
+st.title("🎙️ AI Dubbing Aligner (Overlap-Priority)")
+st.info("Logic: Matches English snippets to the Russian segment they share the most time with. High precision for SmartCat files.")
 
 col1, col2 = st.columns(2)
 
 with col1:
-    orig_file = st.file_uploader("1. Original Speech SRT (Master Timings)", type=['srt'])
+    orig_file = st.file_uploader("1. English SRT (Original Speech)", type=['srt'])
 
 with col2:
-    trans_file = st.file_uploader("2. Translated SRT (Sense Segments)", type=['srt'])
+    trans_file = st.file_uploader("2. Russian SRT (Translation Segments)", type=['srt'])
 
 if orig_file and trans_file:
-    if st.button("Generate AI-Ready CSV"):
+    if st.button("Generate Final Aligned CSV"):
         try:
             csv_result, count_o, count_t = process_srts(orig_file, trans_file)
             df = pd.read_csv(io.StringIO(csv_result))
             
-            st.success(f"Successfully processed! Original: {count_o} lines merged into {count_t} sense-blocks.")
+            st.success(f"Merged {count_o} snippets into {count_t} rows.")
             
-            st.write("### Final Alignment Preview")
+            st.write("### Review Alignment")
             st.dataframe(df, use_container_width=True)
 
             st.download_button(
-                label="📥 Download AI-Ready CSV",
+                label="📥 Download AI Dubbing CSV",
                 data=csv_result.encode('utf-8'),
-                file_name="ai_dubbing_aligned.csv",
+                file_name="ai_dubbing_final.csv",
                 mime="text/csv"
             )
             
         except Exception as e:
             st.error(f"Error: {str(e)}")
-            st.info("Ensure both files are valid .srt format.")
