@@ -105,7 +105,7 @@ st.set_page_config(page_title="AI Dubbing Aligner", layout="wide")
 
 st.title("🎙️ AI Dubbing Aligner (Sentence Integrity Mode)")
 st.markdown("""
-
+Download from smartcat both eng and translated SRTs and upload here to get CSV for 11labs
 """)
 
 col1, col2 = st.columns(2)
@@ -114,7 +114,7 @@ with col1:
     orig_file = st.file_uploader("1. English SRT", type=['srt'])
 
 with col2:
-    trans_file = st.file_uploader("2. Russian SRT", type=['srt'])
+    trans_file = st.file_uploader("2. Translated SRT", type=['srt'])
 
 if orig_file and trans_file:
     if st.button("Generate Final AI-Ready CSV"):
