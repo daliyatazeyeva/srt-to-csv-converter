@@ -14,7 +14,6 @@ def format_timestamp(srt_time):
 
 def process_srts(original_file, translated_file):
     # Read files into memory
-    # We decode using utf-8-sig to handle files with BOM (common in SRTs)
     orig_content = original_file.read().decode("utf-8-sig")
     trans_content = translated_file.read().decode("utf-8-sig")
     
@@ -25,14 +24,17 @@ def process_srts(original_file, translated_file):
     csv_data = []
     csv_headers = ['speaker', 'transcription', 'translation', 'start_time', 'end_time']
     
-    # We use zip_longest to ensure we don't crash if file lengths differ
-    # We use the timing from the ORIGINAL file as the master timing
     for sub_o, sub_t in zip_longest(subs_orig, subs_trans):
-        # Fallback values if one file is shorter than the other
-        transcription = sub_o.text if sub_o else ""
-        translation = sub_t.text if sub_t else ""
+        # Skip if both are empty
+        if not sub_o and not sub_t:
+            continue
+            
+        # Get cleaned text (removing <i></i> tags etc.)
+        # Note: .text_without_tags is a property, so no ()
+        transcription = sub_o.text_without_tags if sub_o else ""
+        translation = sub_t.text_without_tags if sub_t else ""
         
-        # Timing must come from original, if missing use translation timing, if both missing skip
+        # Timing comes from original, if missing use translation timing
         if sub_o:
             start = format_timestamp(sub_o.start)
             end = format_timestamp(sub_o.end)
@@ -40,16 +42,13 @@ def process_srts(original_file, translated_file):
             start = format_timestamp(sub_t.start)
             end = format_timestamp(sub_t.end)
         else:
-            continue
-
-        # Clean HTML tags (like <i></i>) which are common in SRTs
-        clean_transcription = pysrt.SubRipItem.text_without_tags(sub_o) if sub_o else ""
-        clean_translation = pysrt.SubRipItem.text_without_tags(sub_t) if sub_t else ""
+            start = "0.000"
+            end = "0.000"
 
         csv_data.append({
             'speaker': 'Speaker 1',
-            'transcription': clean_transcription.replace('\n', ' '),
-            'translation': clean_translation.replace('\n', ' '),
+            'transcription': transcription.replace('\n', ' ').strip(),
+            'translation': translation.replace('\n', ' ').strip(),
             'start_time': start,
             'end_time': end
         })
@@ -66,7 +65,7 @@ def process_srts(original_file, translated_file):
 st.set_page_config(page_title="SRT to CSV Merger", layout="centered")
 
 st.title("🎬 SRT Merger to CSV")
-st.write("Upload two SRT files. The timing will be taken from the Original file.")
+st.write("Upload two SRT files to merge them into a single CSV.")
 
 col1, col2 = st.columns(2)
 
@@ -82,12 +81,12 @@ if orig_file and trans_file:
             csv_result, count_o, count_t = process_srts(orig_file, trans_file)
             
             if count_o != count_t:
-                st.warning(f"⚠️ Note: File lengths differ. Original: {count_o} subs, Translated: {count_t} subs.")
+                st.warning(f"⚠️ Mismatch! Original: {count_o} lines, Translated: {count_t} lines.")
             else:
                 st.success(f"Successfully merged {count_o} subtitles!")
 
             # Preview
-            st.write("### Preview (First 5 rows)")
+            st.write("### Preview")
             preview_lines = csv_result.splitlines()[:6]
             st.text("\n".join(preview_lines))
 
@@ -100,14 +99,5 @@ if orig_file and trans_file:
             )
             
         except Exception as e:
-            st.error(f"Error processing files: {e}")
-            st.info("Ensure your files are valid .srt files and encoded in UTF-8.")
-
-st.markdown("""
----
-**Instructions:**
-1. Upload the original language SRT.
-2. Upload the translated language SRT.
-3. The tool will match them by index (Subtitle 1 with Subtitle 1).
-4. Download the final CSV for your workflow.
-""")
+            st.error(f"Error processing files: {str(e)}")
+            st.info("Check if files are valid SRT format.")
