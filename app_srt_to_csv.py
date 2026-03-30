@@ -13,86 +13,103 @@ def format_timestamp(srt_time):
                      srt_time.milliseconds / 1000.0)
     return f"{total_seconds:.3f}"
 
-def is_sentence_end(text):
-    """Checks if the text ends with sentence-ending punctuation."""
-    clean_text = text.strip()
-    if not clean_text:
-        return False
-    # Matches . ! ? ... " » and other common sentence ends
-    return bool(re.search(r'[.!?…"»]$', clean_text))
+def group_into_full_sentences(subs):
+    """
+    Groups raw SRT blocks into full sentences based on punctuation.
+    Returns a list of dictionaries with merged text and timing.
+    """
+    sentences = []
+    current_text = []
+    start_time = None
+    
+    for sub in subs:
+        if start_time is None:
+            start_time = sub.start
+            
+        text = sub.text_without_tags.replace('\n', ' ').strip()
+        current_text.append(text)
+        
+        # Check if this block ends a sentence
+        # Looks for . ! ? or ... at the end of the string
+        if re.search(r'[.!?…]$', text):
+            sentences.append({
+                'text': " ".join(current_text),
+                'start': start_time,
+                'end': sub.end
+            })
+            current_text = []
+            start_time = None
+            
+    # Catch any leftover text if the file didn't end with a period
+    if current_text:
+        sentences.append({
+            'text': " ".join(current_text),
+            'start': start_time,
+            'end': subs[-1].end
+        })
+        
+    return sentences
 
 def process_srts(original_file, translated_file):
-    # Read files
     orig_content = original_file.read().decode("utf-8-sig", errors='replace')
     trans_content = translated_file.read().decode("utf-8-sig", errors='replace')
     
     subs_orig = pysrt.from_string(orig_content)
     subs_trans = pysrt.from_string(trans_content)
     
-    n = len(subs_orig)
-    m = len(subs_trans)
-
-    # 1. Identify "Legal" split points in English (End of sentences)
-    # This prevents the "sur-vival" split issue
-    legal_split_indices = [i for i, sub in enumerate(subs_orig) if is_sentence_end(sub.text)]
+    # 1. Reconstruct English into FULL PROPER SENTENCES
+    eng_sentences = group_into_full_sentences(subs_orig)
     
-    # If the English SRT is very poorly punctuated and we don't have enough 
-    # sentence ends to match the Russian count, we allow all indices as fallback
-    if len(legal_split_indices) < m - 1:
-        legal_split_indices = list(range(n))
-
-    # 2. Find the best split points to match Russian segment counts
-    # We want to pick M-1 indices from legal_split_indices
-    chosen_splits = []
-    current_search_idx = 0
+    # 2. Map these full sentences to Russian "Sense Blocks"
+    # We use the midpoint of the silence between Russian blocks as boundaries
+    boundaries = []
+    for i in range(len(subs_trans) - 1):
+        midpoint = (subs_trans[i].end.ordinal + subs_trans[i+1].start.ordinal) / 2
+        boundaries.append(midpoint)
     
-    for j in range(m - 1):
-        target_time = subs_trans[j].end.ordinal
-        best_idx = legal_split_indices[current_search_idx]
-        min_diff = abs(subs_orig[best_idx].end.ordinal - target_time)
+    # Buckets for English sentences
+    buckets = {i: [] for i in range(len(subs_trans))}
+    
+    for eng_s in eng_sentences:
+        # Use the start time of the sentence to determine its bucket
+        s_start = eng_s['start'].ordinal
         
-        # Look ahead in legal splits to find the one closest to Russian end time
-        for k in range(current_search_idx, len(legal_split_indices)):
-            idx = legal_split_indices[k]
-            # Stop if we don't have enough snippets left for remaining Russian blocks
-            if (len(legal_split_indices) - k) < (m - j - 1):
-                break
-                
-            diff = abs(subs_orig[idx].end.ordinal - target_time)
-            if diff <= min_diff:
-                min_diff = diff
-                best_idx = idx
-                current_search_idx = k
+        target_idx = 0
+        for i, b in enumerate(boundaries):
+            if s_start > b:
+                target_idx = i + 1
             else:
-                # Times are increasing, so if diff starts getting larger, we stop
                 break
-        
-        chosen_splits.append(best_idx)
+        buckets[target_idx].append(eng_s)
 
-    # 3. Group the English snippets into buckets
-    buckets = []
-    start_idx = 0
-    for split_idx in chosen_splits:
-        buckets.append(subs_orig[start_idx : split_idx + 1])
-        start_idx = split_idx + 1
-    buckets.append(subs_orig[start_idx:]) # Add the last group
-
-    # 4. Generate CSV Data
+    # 3. Create the CSV rows
     csv_data = []
     csv_headers = ['speaker', 'transcription', 'translation', 'start_time', 'end_time']
     
-    for i, group in enumerate(buckets):
-        if not group: continue
+    for i in range(len(subs_trans)):
+        assigned_eng = buckets[i]
+        sub_t = subs_trans[i]
         
-        transcription = " ".join([s.text_without_tags.replace('\n', ' ').strip() for s in group])
-        translation = subs_trans[i].text_without_tags.replace('\n', ' ').strip() if i < len(subs_trans) else ""
+        if assigned_eng:
+            # Merged text of all sentences in this bucket
+            transcription = " ".join([s['text'] for s in assigned_eng])
+            # Timing priority: TRUE English Start and End
+            start_val = format_timestamp(assigned_eng[0]['start'])
+            end_val = format_timestamp(assigned_eng[-1]['end'])
+        else:
+            # If no English sentence started in this Russian window
+            transcription = ""
+            start_val = format_timestamp(sub_t.start)
+            end_val = format_timestamp(sub_t.end)
+
+        translation = sub_t.text_without_tags.replace('\n', ' ').strip()
         
         csv_data.append({
             'speaker': 'Speaker 1',
             'transcription': transcription,
             'translation': translation,
-            'start_time': format_timestamp(group[0].start),
-            'end_time': format_timestamp(group[-1].end)
+            'start_time': start_val,
+            'end_time': end_val
         })
         
     output = io.StringIO()
@@ -100,40 +117,40 @@ def process_srts(original_file, translated_file):
     writer.writeheader()
     writer.writerows(csv_data)
     
-    return output.getvalue(), n, m
+    return output.getvalue(), len(eng_sentences), len(subs_trans)
 
 # --- Streamlit UI ---
-st.set_page_config(page_title="AI Dubbing Precision Aligner", layout="wide")
+st.set_page_config(page_title="Proper Sentence Aligner", layout="wide")
 
-st.title("🎙️ AI Dubbing Aligner (Sentence-Protection Mode)")
+st.title("🎙️ AI Dubbing Aligner (Full Sentence Mode)")
 st.markdown("""
-**New Logic:** This version prevents "mid-sentence" splits. 
-- It detects English punctuation and ensures rows only break when a thought is finished.
-- It fixes issues like "sur-vival" being split across two rows.
-- Timings are derived 100% from the English speech blocks.
+**New Logic:**
+1. **English Reconstruction:** All fragmented English lines are glued back together into **full proper sentences** based on punctuation.
+2. **Zero Splitting:** An English sentence will **never** be cut in half.
+3. **Timing Priority:** Every row uses the exact English start and end timestamps.
 """)
 
 col1, col2 = st.columns(2)
 
 with col1:
-    orig_file = st.file_uploader("1. English SRT (Original Speech)", type=['srt'])
+    orig_file = st.file_uploader("1. English SRT (Master Timing)", type=['srt'])
 
 with col2:
-    trans_file = st.file_uploader("2. Russian SRT (Sense Blocks)", type=['srt'])
+    trans_file = st.file_uploader("2. Russian SRT (Sense Segments)", type=['srt'])
 
 if orig_file and trans_file:
-    if st.button("Generate AI-Ready CSV"):
+    if st.button("Generate Final CSV"):
         try:
-            csv_result, count_o, count_t = process_srts(orig_file, trans_file)
+            csv_result, eng_count, rus_count = process_srts(orig_file, trans_file)
             df = pd.read_csv(io.StringIO(csv_result))
             
-            st.success(f"Merged {count_o} lines into {count_t} rows while protecting sentence integrity.")
+            st.success(f"Aligned {eng_count} English sentences into {rus_count} Russian segments.")
             st.dataframe(df, use_container_width=True)
 
             st.download_button(
-                label="📥 Download Corrected CSV",
+                label="📥 Download Aligned CSV",
                 data=csv_result.encode('utf-8'),
-                file_name="ai_dubbing_perfect_alignment.csv",
+                file_name="final_sentence_aligned.csv",
                 mime="text/csv"
             )
         except Exception as e:
