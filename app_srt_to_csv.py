@@ -5,6 +5,7 @@ import io
 import pandas as pd
 
 def format_timestamp(srt_time):
+    """Converts pysrt time object to seconds.milliseconds format (0.000)"""
     total_seconds = (srt_time.hours * 3600 + 
                      srt_time.minutes * 60 + 
                      srt_time.seconds + 
@@ -12,9 +13,11 @@ def format_timestamp(srt_time):
     return f"{total_seconds:.3f}"
 
 def process_srts(original_file, translated_file):
+    # Read files into memory
     orig_content = original_file.read().decode("utf-8-sig")
     trans_content = translated_file.read().decode("utf-8-sig")
     
+    # Parse SRT content
     subs_orig = pysrt.from_string(orig_content)
     subs_trans = pysrt.from_string(trans_content)
     
@@ -88,4 +91,17 @@ if orig_file and trans_file:
             csv_result, count_o, count_t = process_srts(orig_file, trans_file)
             df = pd.read_csv(io.StringIO(csv_result))
             
-            st.success(f"Merged {cou
+            st.success(f"Successfully merged {count_o} English snippets into {count_t} Russian segments!")
+            
+            st.write("### Preview")
+            st.dataframe(df, use_container_width=True)
+
+            st.download_button(
+                label="📥 Download Corrected CSV",
+                data=csv_result.encode('utf-8'),
+                file_name="precision_aligned.csv",
+                mime="text/csv"
+            )
+            
+        except Exception as e:
+            st.error(f"Error: {str(e)}")
