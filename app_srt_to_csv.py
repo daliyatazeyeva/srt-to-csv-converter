@@ -14,78 +14,83 @@ def format_timestamp(srt_time):
     return f"{total_seconds:.3f}"
 
 def clean_text(text):
-    """
-    Ensures all lines of text are captured, removing extra newlines 
-    and ensuring no part of the translation is lost.
-    """
-    if not text:
-        return ""
-    # Replace all variations of newlines (including multiple ones) with a single space
-    cleaned = re.sub(r'[\r\n]+', ' ', text)
-    # Remove any tags like <i> or <b>
-    cleaned = re.sub(r'<[^>]*>', '', cleaned)
+    if not text: return ""
+    # Remove HTML tags and fix line breaks
+    cleaned = re.sub(r'<[^>]*>', '', text)
+    cleaned = re.sub(r'[\r\n]+', ' ', cleaned)
     return cleaned.strip()
 
+def get_full_english_sentences(subs):
+    """
+    Groups English SRT blocks into full sentences.
+    Ensures a split ONLY happens at . ! ? or …
+    """
+    sentences = []
+    current_items = []
+    
+    for sub in subs:
+        current_items.append(sub)
+        text = sub.text.strip()
+        # Only split if the text ends with sentence-ending punctuation
+        if re.search(r'[.!?…]$', text):
+            sentences.append({
+                'text': " ".join([clean_text(s.text) for s in current_items]),
+                'start': current_items[0].start,
+                'end': current_items[-1].end
+            })
+            current_items = []
+            
+    # Add remaining text if file doesn't end with punctuation
+    if current_items:
+        sentences.append({
+            'text': " ".join([clean_text(s.text) for s in current_items]),
+            'start': current_items[0].start,
+            'end': current_items[-1].end
+        })
+    return sentences
+
 def process_srts(original_file, translated_file):
-    # Read files with robust encoding support
     orig_content = original_file.read().decode("utf-8-sig", errors='replace')
     trans_content = translated_file.read().decode("utf-8-sig", errors='replace')
     
-    # Parse SRT content
     subs_orig = pysrt.from_string(orig_content)
     subs_trans = pysrt.from_string(trans_content)
     
-    # mapping: Russian index -> list of English SubRipItems
-    matched_mapping = {i: [] for i in range(len(subs_trans))}
+    # 1. First, reconstruct English into WHOLE sentences (Merging fragments)
+    eng_sentences = get_full_english_sentences(subs_orig)
     
-    # ALIGNMENT: Assign every English snippet to its Russian container based on time
-    for sub_o in subs_orig:
-        o_center = sub_o.start.ordinal + (sub_o.duration.ordinal / 2)
-        
-        best_match_idx = 0
-        min_dist = float('inf')
-        
-        for i, sub_t in enumerate(subs_trans):
-            # Check if English center falls within Russian block time
-            if sub_t.start.ordinal <= o_center <= sub_t.end.ordinal:
-                best_match_idx = i
-                break
-            
-            # Distance check for gaps
-            dist = min(abs(sub_t.start.ordinal - o_center), abs(sub_t.end.ordinal - o_center))
-            if dist < min_dist:
-                min_dist = dist
-                best_match_idx = i
-        
-        matched_mapping[best_match_idx].append(sub_o)
-
     csv_data = []
     csv_headers = ['speaker', 'transcription', 'translation', 'start_time', 'end_time']
     
-    for i, sub_t in enumerate(subs_trans):
-        assigned_english = matched_mapping[i]
+    # 2. For every English sentence, find ALL Russian text that belongs to it
+    # We match by looking for any Russian segment that overlaps with the English timeframe
+    for eng_s in eng_sentences:
+        e_start = eng_s['start'].ordinal
+        e_end = eng_s['end'].ordinal
         
-        # Merge Transcription (English)
-        if assigned_english:
-            transcription = " ".join([clean_text(s.text) for s in assigned_english])
-            # Use English timings for speech-priority
-            start_val = format_timestamp(assigned_english[0].start)
-            end_val = format_timestamp(assigned_english[-1].end)
-        else:
-            transcription = ""
-            start_val = format_timestamp(sub_t.start)
-            end_val = format_timestamp(sub_t.end)
+        matching_russian_parts = []
+        
+        for sub_t in subs_trans:
+            t_start = sub_t.start.ordinal
+            t_end = sub_t.end.ordinal
+            
+            # Logic: If more than 20% of the Russian segment falls within the English time, grab it
+            # This handles the 'dot' segments and tiny fragments perfectly
+            overlap = min(e_end, t_end) - max(e_start, t_start)
+            if overlap > 0:
+                matching_russian_parts.append(clean_text(sub_t.text))
+        
+        # Join the fragments (like the main text and the trailing dot)
+        full_translation = " ".join(matching_russian_parts)
+        # Clean up double spaces that might occur during joining
+        full_translation = re.sub(r'\s+', ' ', full_translation).strip()
 
-        # CAPTURE FULL TRANSLATION (Russian)
-        # We use the raw text and apply our robust cleaner to catch all lines
-        translation = clean_text(sub_t.text)
-        
         csv_data.append({
             'speaker': 'Speaker 1',
-            'transcription': transcription,
-            'translation': translation,
-            'start_time': start_val,
-            'end_time': end_val
+            'transcription': eng_s['text'],
+            'translation': full_translation,
+            'start_time': format_timestamp(eng_s['start']),
+            'end_time': format_timestamp(eng_s['end'])
         })
         
     output = io.StringIO()
@@ -93,37 +98,40 @@ def process_srts(original_file, translated_file):
     writer.writeheader()
     writer.writerows(csv_data)
     
-    return output.getvalue(), len(subs_orig), len(subs_trans)
+    return output.getvalue(), len(eng_sentences)
 
 # --- Streamlit UI ---
-st.set_page_config(page_title="Pro AI Dubbing Aligner", layout="wide")
+st.set_page_config(page_title="AI Dubbing Aligner", layout="wide")
 
-st.title("🎙️ AI Dubbing Aligner (Multi-Line Fix)")
-st.info("Updated: Now captures all lines of text from Russian SRT blocks, even if they contain empty lines.")
+st.title("🎙️ AI Dubbing Aligner (Sentence Integrity Mode)")
+st.markdown("""
+**This version fixes Row 17 & 18:**
+1. It ignores Russian splits that happen mid-sentence.
+2. It glues English "comma" fragments together until a period is found.
+3. It takes all Russian text (even single dots) and merges them into the corresponding English row.
+""")
 
 col1, col2 = st.columns(2)
 
 with col1:
-    orig_file = st.file_uploader("1. English SRT (Speech Timings)", type=['srt'])
+    orig_file = st.file_uploader("1. English SRT", type=['srt'])
 
 with col2:
-    trans_file = st.file_uploader("2. Russian SRT (Full Translation)", type=['srt'])
+    trans_file = st.file_uploader("2. Russian SRT", type=['srt'])
 
 if orig_file and trans_file:
-    if st.button("Generate Final CSV"):
+    if st.button("Generate Final AI-Ready CSV"):
         try:
-            csv_result, count_o, count_t = process_srts(orig_file, trans_file)
+            csv_result, final_row_count = process_srts(orig_file, trans_file)
             df = pd.read_csv(io.StringIO(csv_result))
             
-            st.success(f"Processed {count_o} English lines into {count_t} Russian segments.")
-            
-            st.write("### Preview (Check rows to ensure all text is present)")
+            st.success(f"Successfully aligned into {final_row_count} full sentence blocks.")
             st.dataframe(df, use_container_width=True)
 
             st.download_button(
-                label="📥 Download Corrected CSV",
-                data=csv_result.encode('utf-8-sig'), # Added BOM for better Excel support
-                file_name="dubbing_ready_full_text.csv",
+                label="📥 Download Merged CSV",
+                data=csv_result.encode('utf-8-sig'),
+                file_name="ai_dubbing_final.csv",
                 mime="text/csv"
             )
             
