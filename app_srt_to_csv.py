@@ -105,10 +105,7 @@ st.set_page_config(page_title="AI Dubbing Aligner", layout="wide")
 
 st.title("🎙️ AI Dubbing Aligner (Sentence Integrity Mode)")
 st.markdown("""
-**This version fixes Row 17 & 18:**
-1. It ignores Russian splits that happen mid-sentence.
-2. It glues English "comma" fragments together until a period is found.
-3. It takes all Russian text (even single dots) and merges them into the corresponding English row.
+
 """)
 
 col1, col2 = st.columns(2)
