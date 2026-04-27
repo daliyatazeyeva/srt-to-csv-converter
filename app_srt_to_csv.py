@@ -56,41 +56,21 @@ def process_srts(original_file, translated_file):
     subs_orig = pysrt.from_string(orig_content)
     subs_trans = pysrt.from_string(trans_content)
     
-    # 1. First, reconstruct English into WHOLE sentences (Merging fragments)
-    eng_sentences = get_full_english_sentences(subs_orig)
-    
+    # Check if files match segment count
+    if len(subs_orig) != len(subs_trans):
+        st.warning(f"Warning: Segment counts differ! (Eng: {len(subs_orig)}, Trans: {len(subs_trans)})")
+
     csv_data = []
     csv_headers = ['speaker', 'transcription', 'translation', 'start_time', 'end_time']
     
-    # 2. For every English sentence, find ALL Russian text that belongs to it
-    # We match by looking for any Russian segment that overlaps with the English timeframe
-    for eng_s in eng_sentences:
-        e_start = eng_s['start'].ordinal
-        e_end = eng_s['end'].ordinal
-        
-        matching_russian_parts = []
-        
-        for sub_t in subs_trans:
-            t_start = sub_t.start.ordinal
-            t_end = sub_t.end.ordinal
-            
-            # Logic: If more than 20% of the Russian segment falls within the English time, grab it
-            # This handles the 'dot' segments and tiny fragments perfectly
-            overlap = min(e_end, t_end) - max(e_start, t_start)
-            if overlap > 0:
-                matching_russian_parts.append(clean_text(sub_t.text))
-        
-        # Join the fragments (like the main text and the trailing dot)
-        full_translation = " ".join(matching_russian_parts)
-        # Clean up double spaces that might occur during joining
-        full_translation = re.sub(r'\s+', ' ', full_translation).strip()
-
+    # Use zip to match segment #1 to segment #1 directly
+    for sub_e, sub_t in zip(subs_orig, subs_trans):
         csv_data.append({
             'speaker': 'Speaker 1',
-            'transcription': eng_s['text'],
-            'translation': full_translation,
-            'start_time': format_timestamp(eng_s['start']),
-            'end_time': format_timestamp(eng_s['end'])
+            'transcription': clean_text(sub_e.text),
+            'translation': clean_text(sub_t.text),
+            'start_time': format_timestamp(sub_e.start),
+            'end_time': format_timestamp(sub_e.end)
         })
         
     output = io.StringIO()
@@ -98,7 +78,7 @@ def process_srts(original_file, translated_file):
     writer.writeheader()
     writer.writerows(csv_data)
     
-    return output.getvalue(), len(eng_sentences)
+    return output.getvalue(), len(subs_orig)
 
 # --- Streamlit UI ---
 st.set_page_config(page_title="AI Dubbing Aligner", layout="wide")
