@@ -56,15 +56,23 @@ def process_srts(original_file, translated_file):
     subs_orig = pysrt.from_string(orig_content)
     subs_trans = pysrt.from_string(trans_content)
     
-    # Check if files match segment count
-    if len(subs_orig) != len(subs_trans):
-        st.warning(f"Warning: Segment counts differ! (Eng: {len(subs_orig)}, Trans: {len(subs_trans)})")
-
+    # 1. Clean the Russian segments: Remove any that are just a dot or empty
+    # This aligns the "meaningful" count with the English SRT
+    clean_russian = [
+        s for s in subs_trans 
+        if s.text.strip() and s.text.strip() != "."
+    ]
+    
+    # 2. Safety check
+    if len(subs_orig) != len(clean_russian):
+        st.warning(f"Mismatch! Eng Segments: {len(subs_orig)}, Cleaned Russian: {len(clean_russian)}")
+    
     csv_data = []
     csv_headers = ['speaker', 'transcription', 'translation', 'start_time', 'end_time']
     
-    # Use zip to match segment #1 to segment #1 directly
-    for sub_e, sub_t in zip(subs_orig, subs_trans):
+    # 3. Match 1:1 based on meaningful content
+    # We use the timings from the English SRT (subs_orig) as requested
+    for sub_e, sub_t in zip(subs_orig, clean_russian):
         csv_data.append({
             'speaker': 'Speaker 1',
             'transcription': clean_text(sub_e.text),
