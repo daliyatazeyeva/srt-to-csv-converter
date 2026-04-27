@@ -2,3 +2,4 @@ streamlit
 pysrt
 pandas
 numpy
+deep-translator
