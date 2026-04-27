@@ -56,35 +56,57 @@ def process_srts(original_file, translated_file):
     subs_orig = pysrt.from_string(orig_content)
     subs_trans = pysrt.from_string(trans_content)
     
-    # 1. First, reconstruct English into WHOLE sentences (Merging fragments)
+    # 1. Reconstruct English into full sentences (Timestamps from English are preserved)
     eng_sentences = get_full_english_sentences(subs_orig)
     
+    # 2. Prepare a container for Russian text mapped to English indices
+    # mapping = { 0: ["Rus text 1", "Rus text 2"], 1: ["Rus text 3"] ... }
+    mapped_translation = {i: [] for i in range(len(eng_sentences))}
+    
+    # 3. Best-Fit Logic: Assign each Russian segment to exactly ONE English sentence
+    for sub_t in subs_trans:
+        t_start = sub_t.start.ordinal
+        t_end = sub_t.end.ordinal
+        t_mid = (t_start + t_end) / 2
+        
+        best_index = -1
+        max_overlap = -1
+        min_distance = float('inf')
+        closest_index = -1
+
+        for i, eng_s in enumerate(eng_sentences):
+            e_start = eng_s['start'].ordinal
+            e_end = eng_s['end'].ordinal
+            e_mid = (e_start + e_end) / 2
+            
+            # Calculate actual overlap
+            overlap = min(e_end, t_end) - max(e_start, t_start)
+            
+            if overlap > max_overlap:
+                max_overlap = overlap
+                best_index = i
+            
+            # Keep track of the closest sentence just in case timestamps are way off (no overlap)
+            distance = abs(t_mid - e_mid)
+            if distance < min_distance:
+                min_distance = distance
+                closest_index = i
+        
+        # If there is an overlap, use the best overlapping sentence
+        # Otherwise, if timing is "incorrect" and there's no overlap, use the closest sentence
+        target_index = best_index if max_overlap > 0 else closest_index
+        
+        if target_index != -1:
+            mapped_translation[target_index].append(clean_text(sub_t.text))
+
+    # 4. Construct the Final CSV Data
     csv_data = []
     csv_headers = ['speaker', 'transcription', 'translation', 'start_time', 'end_time']
     
-    # 2. For every English sentence, find ALL Russian text that belongs to it
-    # We match by looking for any Russian segment that overlaps with the English timeframe
-    for eng_s in eng_sentences:
-        e_start = eng_s['start'].ordinal
-        e_end = eng_s['end'].ordinal
-        
-        matching_russian_parts = []
-        
-        for sub_t in subs_trans:
-            t_start = sub_t.start.ordinal
-            t_end = sub_t.end.ordinal
-            
-            # Logic: If more than 20% of the Russian segment falls within the English time, grab it
-            # This handles the 'dot' segments and tiny fragments perfectly
-            overlap = min(e_end, t_end) - max(e_start, t_start)
-            if overlap > 0:
-                matching_russian_parts.append(clean_text(sub_t.text))
-        
-        # Join the fragments (like the main text and the trailing dot)
-        full_translation = " ".join(matching_russian_parts)
-        # Clean up double spaces that might occur during joining
+    for i, eng_s in enumerate(eng_sentences):
+        full_translation = " ".join(mapped_translation[i])
         full_translation = re.sub(r'\s+', ' ', full_translation).strip()
-
+        
         csv_data.append({
             'speaker': 'Speaker 1',
             'transcription': eng_s['text'],
